@@ -1,0 +1,43 @@
+# Script'in Windows PowerShell 5.1'de hatasız ayrıştığını ve tespit kodunun çalıştığını denetler.
+# Artifact, önbellek ve release yok: iş bitince depoda veri kalmaz.
+name: Check
+
+on:
+  push:
+    branches: [main]
+    paths: ['**.ps1', '**.cmd', '.github/workflows/check.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Ayrıştırma (Windows PowerShell 5.1)
+        shell: powershell
+        run: |
+          $errors = $null
+          foreach ($f in Get-ChildItem -Recurse -Filter *.ps1) {
+            [void][System.Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$null, [ref]$errors)
+            if ($errors) { $errors | ForEach-Object { Write-Error "$($f.Name): $_" }; exit 1 }
+            if ([System.IO.File]::ReadAllBytes($f.FullName)[0] -ne 0xEF) { Write-Error "$($f.Name): UTF-8 BOM yok (PowerShell 5.1 Türkçe karakterleri bozar)"; exit 1 }
+          }
+
+      - name: Tespit (sahte Steam kütüphanesi)
+        shell: powershell
+        run: |
+          $lib = Join-Path $env:RUNNER_TEMP 'FakeSteam'
+          $game = Join-Path $lib 'steamapps\common\Red Dead Redemption 2'
+          New-Item -ItemType Directory -Force -Path $game | Out-Null
+          New-Item -ItemType File -Force -Path (Join-Path $game 'RDR2.exe') | Out-Null
+          Set-Content (Join-Path $lib 'steamapps\appmanifest_1174180.acf') '"AppState" { "installdir" "Red Dead Redemption 2" }'
+          New-Item -Path 'HKCU:\Software\Valve\Steam' -Force | Out-Null
+          Set-ItemProperty -Path 'HKCU:\Software\Valve\Steam' -Name SteamPath -Value ($lib -replace '\\', '/')
+          $out = .\Set-GamePath.ps1 -Game RDR2 -ListOnly 6>&1 | Out-String
+          Write-Host $out
+          if ($out -notmatch [regex]::Escape($game)) { Write-Error 'Sahte Steam kurulumu bulunamadı'; exit 1 }
+          .\Set-GamePath.ps1 -Game GTAV -ListOnly
